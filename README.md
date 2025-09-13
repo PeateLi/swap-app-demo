@@ -34,13 +34,6 @@ uv sync
 uv run python -m sample_agent.demo
 ```
 
-## 功能特性
-
-- 🔍 搜索历史实时展示
-- 👋 前端工具调用
-- 🌤️ 生成式UI天气卡片
-- ✅ 人工审核流程(HITL)
-
 ## 技术栈
 
 - **前端**: Next.js, TypeScript, TailwindCSS, CopilotKit
