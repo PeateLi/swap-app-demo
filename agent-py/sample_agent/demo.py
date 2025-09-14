@@ -20,6 +20,7 @@ sdk = CopilotKitRemoteEndpoint(
             name="sample_agent",
             description="一个模拟智能体",
             graph=graph,
+            config={"recursion_limit": 50},  # 增加递归限制
         )
     ],
 )

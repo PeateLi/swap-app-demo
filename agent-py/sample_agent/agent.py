@@ -8,6 +8,7 @@ import requests
 import logging
 import time
 import uuid
+import json
 from typing_extensions import Literal
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage
@@ -58,7 +59,7 @@ async def get_exchange_plans(from_token: str, to_token: str, amount: float):
         from_token: 源代币符号 (如 BTC, ETH)
         to_token: 目标代币符号 (如 ETH, USDT)
         amount: 兑换数量
-    
+        
     Returns:
         dict: 包含多种兑换方案的详细信息
     """
@@ -523,115 +524,184 @@ async def chat_node(state: AgentState, config: RunnableConfig):
     
     # 模拟模型响应
     def get_mock_response(messages):
+        """
+        智能化的模拟响应函数，使用AI理解用户意图并调用相应工具
+        """
         last_message = messages[-1].content if messages else "你好"
         
-        # 简化逻辑：只在第一次请求时调用工具，后续都返回文本
-        # 检查是否已经有任何工具调用
-        has_any_tool_call = any(
-            hasattr(msg, 'tool_calls') and msg.tool_calls 
-            for msg in messages
-        )
-        
-        # 检查是否已经有代币列表工具调用
-        has_token_list_call = any(
-            hasattr(msg, 'tool_calls') and msg.tool_calls and 
-            any(tc.get('name') == 'get_token_list' for tc in msg.tool_calls)
-            for msg in messages
-        )
-        
-        # 检查是否已经有兑换方案工具调用
-        has_exchange_plans_call = any(
-            hasattr(msg, 'tool_calls') and msg.tool_calls and 
-            any(tc.get('name') == 'get_exchange_plans' for tc in msg.tool_calls)
-            for msg in messages
-        )
-        
-        if has_token_list_call and not has_exchange_plans_call:
-            # 如果只有代币列表工具调用，直接返回文本响应
-            return AIMessage(content="代币列表已加载完成，请在界面中选择代币进行兑换。")
-        
-        # 检查是否是兑换方案请求（优先处理）
-        import re
-        
-        # 先检查是否包含代币符号
-        token_symbols = ["BTC", "ETH", "USDT", "USDC", "BNB", "ADA", "SOL", "DOT", "MATIC", "AVAX"]
-        found_tokens = [token for token in token_symbols if token in last_message.upper()]
-        
-        # 检查是否包含兑换关键词
-        exchange_keywords = ["兑换", "交换", "换成", "换到", "转换为", "convert", "exchange"]
-        has_exchange_keyword = any(keyword in last_message for keyword in exchange_keywords)
-        
-        if found_tokens and has_exchange_keyword:
-            # 匹配各种兑换模式
-            patterns = [
-                # 完整模式: "1 BTC 兑换到 ETH" 或 "BTC 换 ETH"
-                r'(\d+(?:\.\d+)?)\s*([A-Z]{3,5})\s*(?:兑换|换|换成|换到|转换为|兑换到)\s*([A-Z]{3,5})',
-                r'([A-Z]{3,5})\s*(?:兑换|换|换成|换到|转换为|兑换到)\s*([A-Z]{3,5})',
-                r'(\d+(?:\.\d+)?)\s*([A-Z]{3,5})\s*换\s*([A-Z]{3,5})',
-                r'([A-Z]{3,5})\s*换\s*([A-Z]{3,5})',
-                # 简单模式: "兑换 BTC" 或 "BTC 兑换"
-                r'(?:兑换|换|换成|换到|转换为|兑换到)\s*([A-Z]{3,5})',
-                r'([A-Z]{3,5})\s*(?:兑换|换|换成|换到|转换为|兑换到)',
-                # 数字+代币模式: "20ETH" 或 "1BTC" (只在有兑换关键词时)
-                r'(\d+(?:\.\d+)?)([A-Z]{3,5})'
-            ]
+        # 使用AI模型分析用户意图
+        try:
+            # 创建AI模型用于意图分析
+            intent_model = ChatOpenAI(
+                model="gpt-4o-mini",
+                temperature=0.1,
+                api_key=os.getenv("OPENAI_API_KEY")
+            )
             
-            for pattern in patterns:
-                match = re.search(pattern, last_message.upper())
-                if match:
-                    groups = match.groups()
-                    if len(groups) == 3:
-                        amount, from_token, to_token = groups
-                        return AIMessage(content=f"我来为您生成 {amount} {from_token} 兑换到 {to_token} 的多种方案。", tool_calls=[{
-                            "name": "get_exchange_plans",
-                            "args": {
-                                "from_token": from_token,
-                                "to_token": to_token,
-                                "amount": float(amount)
-                            },
-                            "id": "exchange_plans_1"
-                        }])
-                    elif len(groups) == 2:
-                        from_token, to_token = groups
-                        return AIMessage(content=f"我来为您生成 {from_token} 兑换到 {to_token} 的方案，请告诉我兑换数量。", tool_calls=[{
-                            "name": "get_exchange_plans",
-                            "args": {
-                                "from_token": from_token,
-                                "to_token": to_token,
-                                "amount": 1.0
-                            },
-                            "id": "exchange_plans_1"
-                        }])
-                    elif len(groups) == 2 and groups[0].isdigit():
-                        # 数字+代币模式: "20ETH" 或 "1BTC"
-                        amount, from_token = groups
-                        return AIMessage(content=f"您想将 {amount} {from_token} 兑换成什么代币？请告诉我目标代币（如 ETH、USDT 等）。")
-                    elif len(groups) == 1:
-                        # 只有源代币，需要询问目标代币
-                        from_token = groups[0]
-                        return AIMessage(content=f"您想将 {from_token} 兑换成什么代币？请告诉我目标代币（如 ETH、USDT 等）。")
+            # 构建意图分析提示
+            intent_prompt = f"""
+            分析用户消息的意图，并返回JSON格式的响应。
             
-            # 如果没有匹配到具体模式，但有代币符号和兑换关键词，提供通用回复
-            if found_tokens:
-                return AIMessage(content=f"您想兑换 {found_tokens[0]} 吗？请告诉我：\n1. 兑换数量（如 1 BTC）\n2. 目标代币（如 ETH、USDT 等）\n例如：'我要兑换 1 BTC 到 ETH'")
-        
-        # 如果只有代币符号但没有兑换关键词，询问是否要兑换
-        elif found_tokens:
-            return AIMessage(content=f"您想兑换 {found_tokens[0]} 吗？请告诉我：\n1. 兑换数量（如 1 BTC）\n2. 目标代币（如 ETH、USDT 等）\n例如：'我要兑换 1 BTC 到 ETH'")
-        
-        # 检查是否包含兑换关键词但没有代币符号
-        elif has_exchange_keyword:
-            return AIMessage(content="请告诉我您想兑换哪些代币？例如：\n- 'BTC 兑换 ETH'\n- '1 BTC 兑换到 USDT'\n- 'ETH 换 USDT'")
-        
-        # 只在特定关键词时才调用工具
-        if any(keyword in last_message for keyword in ["代币", "token", "币种", "选择", "查看代币列表"]):
-            return AIMessage(content="我来为你展示可用的代币列表。", tool_calls=[{
-                "name": "get_token_list",
-                "args": {},
-                "id": "token_list_1"
-            }])
-        else:
-            return AIMessage(content=f"你好！我是代币兑换助手。你可以：\n1. 说'查看代币列表'来选择代币\n2. 直接说'我要兑换 BTC 到 ETH'来获取兑换方案")
+            用户消息: "{last_message}"
+            
+            可能的意图类型:
+            1. "token_list" - 用户想查看代币列表
+            2. "exchange" - 用户想进行代币兑换
+            3. "greeting" - 用户打招呼
+            4. "help" - 用户需要帮助
+            5. "unclear" - 意图不明确
+            
+            对于兑换意图，还需要提取:
+            - from_token: 源代币符号
+            - to_token: 目标代币符号  
+            - amount: 兑换数量
+            
+            请返回JSON格式:
+            {{
+                "intent": "意图类型",
+                "confidence": 0.9,
+                "from_token": "BTC",
+                "to_token": "ETH", 
+                "amount": 1.0,
+                "reasoning": "分析原因"
+            }}
+            """
+            
+            # 调用AI分析意图
+            intent_response = intent_model.invoke([SystemMessage(content=intent_prompt)])
+            intent_data = json.loads(intent_response.content)
+            
+            logger.info(f"🤖 AI意图分析: {intent_data}")
+            
+            # 根据意图执行相应操作
+            if intent_data["intent"] == "token_list":
+                # 检查是否已经有工具调用在历史中
+                has_any_tool_call = any(
+                    isinstance(msg, AIMessage) and msg.tool_calls 
+                    for msg in state["messages"]
+                )
+                
+                if has_any_tool_call:
+                    return AIMessage(content="代币列表已加载完成，请在界面中选择代币进行兑换。")
+                else:
+                    return AIMessage(content="我来为你展示可用的代币列表。", tool_calls=[{
+                        "name": "get_token_list",
+                        "args": {},
+                        "id": "token_list_1"
+                    }])
+            
+            elif intent_data["intent"] == "exchange":
+                from_token = intent_data.get("from_token", "").upper()
+                to_token = intent_data.get("to_token", "").upper()
+                amount = intent_data.get("amount", 1.0)
+                
+                if from_token and to_token:
+                    return AIMessage(content=f"我来为您生成 {amount} {from_token} 兑换到 {to_token} 的多种方案。", tool_calls=[{
+                        "name": "get_exchange_plans",
+                        "args": {
+                            "from_token": from_token,
+                            "to_token": to_token,
+                            "amount": float(amount)
+                        },
+                        "id": "exchange_plans_1"
+                    }])
+                elif from_token:
+                    return AIMessage(content=f"您想将 {from_token} 兑换成什么代币？请告诉我目标代币（如 ETH、USDT 等）。")
+                else:
+                    return AIMessage(content="请告诉我您想兑换哪些代币？例如：\n- 'BTC 兑换 ETH'\n- '1 BTC 兑换到 USDT'\n- 'ETH 换 USDT'")
+            
+            elif intent_data["intent"] == "greeting":
+                return AIMessage(content="你好！我是代币兑换助手。你可以：\n1. 说'查看代币列表'来选择代币\n2. 直接说'我要兑换 BTC 到 ETH'来获取兑换方案")
+            
+            elif intent_data["intent"] == "help":
+                return AIMessage(content="我可以帮助您：\n\n🔍 **查看代币列表**\n- 说'查看代币列表'或'显示代币'\n- 查看所有可兑换的代币及其价格\n\n💱 **代币兑换**\n- 直接说'我要兑换 BTC 到 ETH'\n- 或'1 BTC 换 USDT'\n- 我会为您生成多种兑换方案\n\n❓ **需要帮助**\n- 随时问我任何问题！")
+            
+            else:
+                return AIMessage(content="我不太理解您的意思。您可以：\n1. 说'查看代币列表'来选择代币\n2. 直接说'我要兑换 BTC 到 ETH'来获取兑换方案")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ AI意图分析失败，使用规则匹配: {e}")
+            
+            # 回退到规则匹配
+            import re
+            
+            # 检查是否包含代币符号
+            token_symbols = ["BTC", "ETH", "USDT", "USDC", "BNB", "ADA", "SOL", "DOT", "MATIC", "AVAX"]
+            found_tokens = [token for token in token_symbols if token in last_message.upper()]
+            
+            # 检查是否包含兑换关键词
+            exchange_keywords = ["兑换", "交换", "换成", "换到", "转换为", "convert", "exchange"]
+            has_exchange_keyword = any(keyword in last_message for keyword in exchange_keywords)
+            
+            # 检查是否是代币列表请求
+            token_list_keywords = ["代币", "token", "币种", "选择", "列表", "查看", "显示", "展示"]
+            has_token_list_keyword = any(keyword in last_message for keyword in token_list_keywords)
+            
+            if has_token_list_keyword:
+                # 检查是否已经有工具调用在历史中
+                has_any_tool_call = any(
+                    isinstance(msg, AIMessage) and msg.tool_calls 
+                    for msg in state["messages"]
+                )
+                
+                if has_any_tool_call:
+                    return AIMessage(content="代币列表已加载完成，请在界面中选择代币进行兑换。")
+                else:
+                    return AIMessage(content="我来为你展示可用的代币列表。", tool_calls=[{
+                        "name": "get_token_list",
+                        "args": {},
+                        "id": "token_list_1"
+                    }])
+            
+            elif found_tokens and has_exchange_keyword:
+                # 使用正则表达式匹配兑换模式
+                patterns = [
+                    r'(\d+(?:\.\d+)?)\s*([A-Z]{3,5})\s*(?:兑换|换|换成|换到|转换为|兑换到)\s*([A-Z]{3,5})',
+                    r'([A-Z]{3,5})\s*(?:兑换|换|换成|换到|转换为|兑换到)\s*([A-Z]{3,5})',
+                    r'(\d+(?:\.\d+)?)([A-Z]{3,5})'
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, last_message.upper())
+                    if match:
+                        groups = match.groups()
+                        if len(groups) == 3:
+                            amount, from_token, to_token = groups
+                            return AIMessage(content=f"我来为您生成 {amount} {from_token} 兑换到 {to_token} 的多种方案。", tool_calls=[{
+                                "name": "get_exchange_plans",
+                                "args": {
+                                    "from_token": from_token,
+                                    "to_token": to_token,
+                                    "amount": float(amount)
+                                },
+                                "id": "exchange_plans_1"
+                            }])
+                        elif len(groups) == 2:
+                            if groups[0].isdigit():
+                                amount, from_token = groups
+                                return AIMessage(content=f"您想将 {amount} {from_token} 兑换成什么代币？请告诉我目标代币（如 ETH、USDT 等）。")
+                            else:
+                                from_token, to_token = groups
+                                return AIMessage(content=f"我来为您生成 {from_token} 兑换到 {to_token} 的方案，请告诉我兑换数量。", tool_calls=[{
+                                    "name": "get_exchange_plans",
+                                    "args": {
+                                        "from_token": from_token,
+                                        "to_token": to_token,
+                                        "amount": 1.0
+                                    },
+                                    "id": "exchange_plans_1"
+                                }])
+                
+                return AIMessage(content=f"您想兑换 {found_tokens[0]} 吗？请告诉我：\n1. 兑换数量（如 1 BTC）\n2. 目标代币（如 ETH、USDT 等）")
+            
+            elif found_tokens:
+                return AIMessage(content=f"您想兑换 {found_tokens[0]} 吗？请告诉我：\n1. 兑换数量（如 1 BTC）\n2. 目标代币（如 ETH、USDT 等）")
+            
+            elif has_exchange_keyword:
+                return AIMessage(content="请告诉我您想兑换哪些代币？例如：\n- 'BTC 兑换 ETH'\n- '1 BTC 兑换到 USDT'\n- 'ETH 换 USDT'")
+            
+            else:
+                return AIMessage(content="你好！我是代币兑换助手。你可以：\n1. 说'查看代币列表'来选择代币\n2. 直接说'我要兑换 BTC 到 ETH'来获取兑换方案")
     
     # 使用模拟响应而不是真实模型
     response = get_mock_response(state["messages"])
@@ -675,15 +745,14 @@ async def chat_node(state: AgentState, config: RunnableConfig):
     return {"messages": response, "search_history": []}
 
 async def tool_node(state: AgentState, config: RunnableConfig):
-
-    print('*****************进入 tool_node *****************')
-    
-    print("当前历史消息2:")
-    print(state["messages"])
     """
     自定义工具调用节点，替代内置的ToolNode
-    处理工具调用并返回结果，包含简化的人工审核流程
+    处理工具调用并返回结果
     """
+    print('*****************进入 tool_node *****************')
+    print("当前历史消息2:")
+    print(state["messages"])
+    
     # 获取最后一条消息
     last_message = state["messages"][-1]
     
@@ -705,7 +774,6 @@ async def tool_node(state: AgentState, config: RunnableConfig):
     tool_map = {tool.name: tool for tool in all_tools}
     
     # 获取工具调用信息
-    tool_call = last_message.tool_calls[0]
     tool_name = tool_call.get("name")
     tool_args = tool_call.get("args", {})
     tool_id = tool_call.get("id")
@@ -749,7 +817,7 @@ async def tool_node(state: AgentState, config: RunnableConfig):
                 content = json.dumps(result, ensure_ascii=False, indent=2)
             else:
                 content = str(result)
-                
+            
             tool_message = ToolMessage(
                 content=content,
                 tool_call_id=tool_id,
