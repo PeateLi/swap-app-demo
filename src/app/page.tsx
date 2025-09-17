@@ -1,17 +1,97 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { useCopilotAction } from "@copilotkit/react-core";
 import { useAtom } from 'jotai'
-import { Card, CardBody, Spinner } from '@heroui/react'
+import { Card, CardBody, Spinner, Tabs, Tab } from '@heroui/react'
 import TokenSelector from '../components/TokenSelector'
 import ExchangePlansSelector from '../components/ExchangePlansSelector'
+import { ModuleManager, ModuleDashboard } from '../components/ModuleManager/ModuleManager'
+import { OAuthButton, ModuleStatus } from '../components/OAuth/OAuthButton'
+import { ModuleDebugInfo } from '../components/Debug/ModuleDebugInfo'
+import { DeFiInterface } from '../modules/defi/components/DeFiInterface'
+import { NFTInterface } from '../modules/nft/components/NFTInterface'
+import { useOAuth } from '../hooks/useOAuth'
+import { moduleRegistry } from '../core/ModuleRegistry'
+import { testModuleConfig } from '../modules/test/testModule'
+import { swapModuleConfig } from '../modules/swap/swapModule'
+import { defiModuleConfig } from '../modules/defi/defiModule'
+import { nftModuleConfig } from '../modules/nft/nftModule'
 import { loadingAtom, errorAtom } from '../store/tokenStore'
 
 export default function YourApp() {
   const [loading] = useAtom(loadingAtom)
   const [error] = useAtom(errorAtom)
+  const [selectedTab, setSelectedTab] = useState('swap')
+  const oauth = useOAuth()
+
+  // 初始化模块
+  useEffect(() => {
+    try {
+      console.log('开始注册模块...')
+      
+      // 先注册测试模块
+      if (testModuleConfig) {
+        console.log('注册测试模块:', testModuleConfig.id)
+        moduleRegistry.registerModule(testModuleConfig)
+      } else {
+        console.error('测试模块配置未定义')
+      }
+      
+      // 检查模块配置是否存在
+      if (swapModuleConfig) {
+        console.log('注册Swap模块:', swapModuleConfig.id)
+        moduleRegistry.registerModule(swapModuleConfig)
+      } else {
+        console.error('Swap模块配置未定义')
+      }
+      
+      if (defiModuleConfig) {
+        console.log('注册DeFi模块:', defiModuleConfig.id)
+        moduleRegistry.registerModule(defiModuleConfig)
+      } else {
+        console.error('DeFi模块配置未定义')
+      }
+      
+      if (nftModuleConfig) {
+        console.log('注册NFT模块:', nftModuleConfig.id)
+        moduleRegistry.registerModule(nftModuleConfig)
+      } else {
+        console.error('NFT模块配置未定义')
+      }
+      
+      console.log('模块注册完成')
+    } catch (error) {
+      console.error('模块注册失败:', error)
+    }
+  }, [])
+
+  // 处理OAuth回调
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search)
+    const authSuccess = urlParams.get('auth_success')
+    const authData = urlParams.get('auth_data')
+    const error = urlParams.get('error')
+
+    if (authSuccess === 'true' && authData) {
+      try {
+        const auth = JSON.parse(decodeURIComponent(authData))
+        // 这里应该调用OAuth provider的方法来处理认证数据
+        console.log('OAuth认证成功:', auth)
+        // 清理URL参数
+        window.history.replaceState({}, document.title, window.location.pathname)
+      } catch (err) {
+        console.error('解析认证数据失败:', err)
+      }
+    }
+
+    if (error) {
+      console.error('OAuth认证失败:', error)
+      // 清理URL参数
+      window.history.replaceState({}, document.title, window.location.pathname)
+    }
+  }, [])
 
   // 代币列表获取
   useCopilotAction({
@@ -67,11 +147,31 @@ export default function YourApp() {
         <div className="container mx-auto px-4 py-8">
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent mb-4">
-              💱 代币兑换平台
+              🚀 模块化DeFi平台
             </h1>
             <p className="text-xl text-gray-600 mb-8">
-              安全、快速、低手续费的代币兑换服务
+              安全、快速、可扩展的区块链金融服务
             </p>
+
+            {/* 用户认证状态 */}
+            {oauth.isAuthenticated && (
+              <Card className="max-w-md mx-auto mb-6">
+                <CardBody className="text-center p-4">
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <span className="text-green-500">✅</span>
+                    <span className="font-medium">已登录</span>
+                  </div>
+                  <p className="text-sm text-gray-600">
+                    欢迎, {oauth.user?.name || oauth.user?.email}
+                  </p>
+                  {oauth.currentModule && (
+                    <p className="text-xs text-blue-600">
+                      当前模块: {oauth.currentModule}
+                    </p>
+                  )}
+                </CardBody>
+              </Card>
+            )}
             
             {loading && (
               <Card className="max-w-md mx-auto">
@@ -90,8 +190,75 @@ export default function YourApp() {
               </Card>
             )}
           </div>
+
+          {/* 主内容区域 */}
+          <div className="max-w-6xl mx-auto">
+            <Tabs 
+              selectedKey={selectedTab} 
+              onSelectionChange={(key) => setSelectedTab(key as string)}
+              className="w-full"
+              classNames={{
+                tabList: "w-full",
+                tab: "flex-1"
+              }}
+            >
+              <Tab key="swap" title="💱 代币兑换">
+                <div className="mt-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-2xl font-bold">代币兑换</h2>
+                    <div className="flex items-center gap-2">
+                      <ModuleStatus module="swap" />
+                      <OAuthButton module="swap" size="sm" />
+                    </div>
+                  </div>
+                  {/* 原有的代币兑换内容 */}
+                </div>
+              </Tab>
+
+              <Tab key="defi" title="🏦 DeFi服务">
+                <div className="mt-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-2xl font-bold">去中心化金融</h2>
+                    <div className="flex items-center gap-2">
+                      <ModuleStatus module="defi" />
+                      <OAuthButton module="defi" size="sm" />
+                    </div>
+                  </div>
+                  <DeFiInterface />
+                </div>
+              </Tab>
+
+              <Tab key="nft" title="🎨 NFT市场">
+                <div className="mt-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-2xl font-bold">NFT市场</h2>
+                    <div className="flex items-center gap-2">
+                      <ModuleStatus module="nft" />
+                      <OAuthButton module="nft" size="sm" />
+                    </div>
+                  </div>
+                  <NFTInterface />
+                </div>
+              </Tab>
+
+              <Tab key="modules" title="⚙️ 模块管理">
+                <div className="mt-6">
+                  <ModuleManager />
+                </div>
+              </Tab>
+
+              <Tab key="dashboard" title="📊 仪表板">
+                <div className="mt-6">
+                  <ModuleDashboard />
+                </div>
+              </Tab>
+            </Tabs>
+          </div>
         </div>
       </div>
+      
+      {/* 调试信息组件 */}
+      <ModuleDebugInfo />
       
       <CopilotSidebar
         defaultOpen={true}
